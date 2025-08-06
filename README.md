@@ -1,20 +1,20 @@
 # MSI Clustering Suite
 
-Questa è un'applicazione **Shiny** per l'analisi e il clustering di dati di **spettrometria di massa da immagini (MSI)**.
+This is a **Shiny** application for the analysis and clustering of **Mass Spectrometry Imaging (MSI)** data.
 
-L'app permette di:
-- Caricare dati in formato `.rds`, `.csv`, `.txt`, `.xlsx` o `.imzML`
-- Scegliere tra diverse metriche di distanza e algoritmi di clustering
-- Visualizzare e classificare nuovi tessuti
-- Salvare i risultati come report `.csv`
+The app allows you to:
+- Load data in `.rds`, `.csv`, `.txt`, `.xlsx`, or `.imzML` format  
+- Choose between different distance metrics and clustering algorithms  
+- Visualize and classify new tissue regions  
+- Save results as `.csv` reports
 
-## 📁 Contenuto della cartella
+## 📁 Folder contents
 
-- `lancio_app.R` – Codice principale dell'app Shiny
-- `FinalMatrix_Peptides.RDS` – Esempio di matrice intensità
-- `FinalMatrix_Coor.RDS` – Esempio di coordinate XY
+- `lancio_app.R` – Main Shiny app script  
+- `FinalMatrix_Peptides.RDS` – Example intensity matrix  
+- `FinalMatrix_Coor.RDS` – Example XY coordinates
 
-## ▶️ Esecuzione
+## ▶️ Run the app
 
 ```r
 shiny::runApp("lancio_app.R")
