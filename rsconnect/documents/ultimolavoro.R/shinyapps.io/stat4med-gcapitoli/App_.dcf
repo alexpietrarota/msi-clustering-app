@@ -1,0 +1,12 @@
+name: App_
+title: App_
+username: stat4med-gcapitoli
+account: stat4med-gcapitoli
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 15157373
+bundleId: 10723105
+url: https://stat4med-gcapitoli.shinyapps.io/App_/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE
