@@ -3,7 +3,7 @@
 Questa è un'applicazione **Shiny** per l'analisi e il clustering di dati di **spettrometria di massa da immagini (MSI)**.
 
 L'app permette di:
-- Caricare dati in formato `.rds` o `.imzML`
+- Caricare dati in formato `.rds`, `.csv`, `.txt`, `.xlsx` o `.imzML`
 - Scegliere tra diverse metriche di distanza e algoritmi di clustering
 - Visualizzare e classificare nuovi tessuti
 - Salvare i risultati come report `.csv`
