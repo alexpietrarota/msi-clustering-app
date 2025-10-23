@@ -11,6 +11,7 @@ library(data.table)
 library(tools)
 library(bslib)
 library(gridExtra)
+library(dplyr)
 if (!requireNamespace("Cardinal", quietly = TRUE)) {
   if (!requireNamespace("BiocManager", quietly = TRUE)) {
     install.packages("BiocManager")
@@ -24,7 +25,8 @@ library(MALDIquantForeign)
 
 
 
-options(shiny.maxRequestSize = 100*1024^2)
+options(shiny.maxRequestSize = 1024^3)  # ≈ 1 GB
+
 
 # -------- FUNZIONI --------
 
@@ -36,14 +38,36 @@ read_any_data <- function(file) {
   stop("Unsupported file format:", ext)
 }
 
-fun_extractData <- function(zip_path) {
-  unzip_dir <- tempfile()
-  dir.create(unzip_dir)
-  unzip(zip_path$datapath, exdir = unzip_dir)
+fun_extractData <- function(zip_input) {
+  # zip_input è l'oggetto di fileInput; uso zip_input$datapath
+  zip_path <- if (is.list(zip_input)) zip_input$datapath else zip_input
   
-  imzml_file <- list.files(unzip_dir, pattern = "\\.imzML$", full.names = TRUE)
-  if (length(imzml_file) != 1) stop("❌ The zip archive must contain exactly one .imzML file")
+  unzip_dir <- tempfile("unz_")
+  dir.create(unzip_dir, showWarnings = FALSE)
+  on.exit(unlink(unzip_dir, recursive = TRUE), add = TRUE)
   
+  # Estrai tutto appiattendo i percorsi per evitare problemi di sottocartelle
+  utils::unzip(zip_path, exdir = unzip_dir, junkpaths = TRUE)
+  
+  # Lista file utili (ignora __MACOSX)
+  all_files <- list.files(unzip_dir, recursive = TRUE, full.names = TRUE)
+  all_files <- all_files[!grepl("/__MACOSX(/|$)", all_files)]
+  
+  # Trova esattamente uno .imzML (case-insensitive)
+  imzml_file <- grep("\\.imzml$", all_files, ignore.case = TRUE, value = TRUE)
+  
+  if (length(imzml_file) != 1) {
+    stop(sprintf("❌ The zip archive must contain exactly one .imzML file (found %d).",
+                 length(imzml_file)))
+  }
+  
+  # Controlla che esista il .ibd corrispondente
+  ibd_expected <- sub("\\.imzml$", ".ibd", imzml_file, ignore.case = TRUE)
+  if (!ibd_expected %in% all_files) {
+    stop(sprintf("❌ Matching .ibd file not found for: %s", basename(imzml_file)))
+  }
+  
+  # Import
   spectra <- importImzMl(imzml_file, centroided = TRUE)
   
   n_pixel <- length(spectra)
@@ -103,6 +127,14 @@ ui <- navbarPage(
     value = "home",
     fluidPage(
       h2("Welcome to the MSI Clustering Suite"),
+      tags$div(
+        class = "alert alert-info mt-3",
+        role = "alert",
+        HTML(sprintf(
+          "<strong>Manuscript in preparation — awaiting submission.</strong> <span class='text-muted'>Updated on %s</span>",
+          format(Sys.Date(), "%Y-%m-%d")
+        ))
+      ),
       p("This Shiny application lets you explore and cluster imaging mass-spectrometry data, either as an IM matrix with XY coordinates or as imzML archives, in a reproducible and interactive way."),
       tags$hr(),
       h4("Quick start?"),
@@ -113,9 +145,12 @@ ui <- navbarPage(
         tags$li("Press “Assign clusters” to view and explore the results.")
       ),
       tags$p(
-        tags$a(href = "FinalMatrix_Peptides.RDS", download = NA, "⬇️ Download IM example (RDS)"),
-        " · ",
-        tags$a(href = "FinalMatrix_Coor.RDS", download = NA, "⬇️ Download XY example (RDS)")
+        " Visit the project on GitHub to download example datasets: ",
+        tags$a(
+          href = "https://github.com/alexpietrarota/msi-clustering-app",
+          "msi-clustering-app",
+          target = "_blank"
+        )
       ),
       tags$hr(),
       h4("Developed by"),
@@ -145,7 +180,8 @@ ui <- navbarPage(
                      fileInput("original_XY", "Upload XY file", accept = c(".rds", ".csv", ".txt", ".xlsx")),
                      conditionalPanel("input.mode_rds == 'tessuto'",
                                       fileInput("file_new_im", "Matrice IM nuovo tessuto", accept = c(".rds", ".csv", ".txt", ".xlsx")),
-                                      fileInput("file_new_xy", "Coordinate XY nuovo tessuto", accept = c(".rds", ".csv", ".txt", ".xlsx"))
+                                      fileInput("file_new_xy", "Coordinate XY nuovo tessuto", accept = c(".rds", ".csv", ".txt", ".xlsx")),
+                                      numericInput("mz_round", "Decimal places for m/z rounding", value = 1, min = 0, max = 5, step = 1)
                      ),
                      numericInput("cell_size", "Grid cell size (1-30)", value = 3, min = 1, max = 30),
                      
@@ -207,18 +243,19 @@ ui <- navbarPage(
                      
                      fileInput("original_zip", "Original tissue (.zip)", accept = ".zip"),
                      conditionalPanel("input.mode_zip == 'tessuto'",
-                                      fileInput("new_zip", "New tissue (.zip)", accept = ".zip")
+                                      fileInput("new_zip", "New tissue (.zip)", accept = ".zip"),
+                                      numericInput("mz_round", "Decimal places for m/z rounding", value = 1, min = 0, max = 5, step = 1)
                      ),
                      numericInput("cell_size", "Grid cell size (1-30)", value = 3, min = 1, max = 30),
                      
                      actionLink("show_gloss", "🌏 General Information"),
                      
                      selectInput("method", "Distance method",
-                                 choices = c("angular", "braun-blanquet", "bray", "canberra", "chord", "correlation",
-                                             "cosine", "divergence", "eDice", "euclidean", "eJaccard", "faith", "fager", "geodesic",
-                                             "hamman", "hellinger", "jaccard", "kulczynski2", "kullback", "manhattan", "michael",
-                                             "mozley", "ochiai", "russel", "simple matching", "simpson", "soergel", "squared_euclidean",
-                                             "supremum", "tanimoto", "wave", "whittaker"),
+                                 choices = c("angular","bhjattacharyya","bray","canberra","chord","correlation",
+                                             "cosine","divergence","eDice","eJaccard","euclidean",
+                                             "geodesic","hellinger",
+                                             "manhattan","soergel","squared_euclidean","supremum","wave",
+                                             "whittaker"),
                                  selected = "euclidean"),
                      selectInput("algorithm", "Clustering algorithm",
                                  choices = c("Hierarchical Clustering", "K-means"),
@@ -282,13 +319,14 @@ server <- function(input, output, session) {
     updateNavbarPage(session, inputId = "main_nav", selected = "analysis")
   })
   
-    # ---- Modale: File structure e requisiti (.rds) ----
-    observeEvent(input$show_note, {
-      req(input$main_nav, input$analysis)
-      if (input$main_nav == "analysis" && input$analysis == "Upload IM + XY Files") {
-        showModal(modalDialog(
-          title = "Important Note",
-          HTML(
+  # ---- Modale: File structure e requisiti (.rds) ----
+  observeEvent(input$show_note, {
+    req(input$main_nav, input$analysis)
+    if (input$main_nav == "analysis" && input$analysis == "Upload IM + XY Files") {
+      showModal(modalDialog(
+        title = "Important Note",
+        HTML(
+          paste0(
             "<h4><b>Supported File Formats</b></h4>
           <p>The supported file formats are: <code>.rds</code>, <code>.RDS</code>, 
           <code>.csv</code>, <code>.txt</code>, <code>.xlsx</code></p>
@@ -316,14 +354,17 @@ server <- function(input, output, session) {
           and the original data are preserved, even for large datasets.
           </p>
 
-          <h4><b>Example Datasets</b></h4>
-          <p>For example datasets, refer to the Home tab.</p>"
-          ),
-          easyClose = TRUE,
-          footer = modalButton("Close")
-        ))
-      }
-    })
+        <h4><b>Example Datasets</b></h4>
+        <p>For example datasets, refer to the Home tab.</p>
+      "
+          )
+        ),
+        easyClose = TRUE,
+        footer = modalButton("Close")
+      ))
+    }
+  })
+  
     
     # ---- Modale: Info generali sulle distanze ----
     observeEvent(input$show_gloss, {
@@ -333,7 +374,7 @@ server <- function(input, output, session) {
           title = "General Information",
           HTML(
             "<h4><b>Note</b></h4>
-          <p><i>Consult <code>proxy::dist()</code> and <code>vegan::vegdist</code> documentation for the complete list of distance methods.</i></p><br>
+          <p><i>Consult <code>proxy::dist()</code> documentation for the complete list of distance methods.</i></p><br>
 
           <h4><b>Non-Euclidean Distance for K-means</b></h4>
           <p>When a non-Euclidean distance method is selected for K-means, dimensionality
@@ -383,6 +424,7 @@ server <- function(input, output, session) {
   })
   
   
+  #   ----------------- RDS -----------------  
   
   observeEvent(input$run_rds, {
     req(input$original_IM, input$original_XY)
@@ -435,17 +477,18 @@ server <- function(input, output, session) {
       incProgress(0.7, detail = "Clustering...")
       
       if (input$algorithm == "K-means") {
-        if (input$method == "euclidean" || input$method == "squared_euclidean") {
-          clusters <- kmeans(original_IM, centers = input$k, nstart = 10)$cluster
-          
-        } else {
+        is_euclid <- tolower(input$method) %in% c("euclidean", "squared_euclidean")
+        use_mds  <- isTRUE(input$weight_space) || !is_euclid
+        # - Se weight_space=TRUE -> MDS SEMPRE (anche per euclidea)
+        # - Se no pesatura: MDS solo per metriche non euclidee
+        
+        if (use_mds) {
           incProgress(0.75, detail = "Running MDS...")
           
-          dist_mat <- proxy::dist(original_IM, method = input$method)
-          mds_result <- cmdscale(dist_mat, eig = TRUE, k = nrow(original_IM) - 1)
+          # MDS sulla dist_matrix (già pesata se weight_space=TRUE)
+          mds_result <- cmdscale(dist_matrix, eig = TRUE, k = min(nrow(original_IM) - 1, 50L))
           
           eig_vals <- mds_result$eig[mds_result$eig > 0]
-          
           if (length(eig_vals) == 0) {
             showNotification("⚠️ No positive eigenvalues found in MDS. Check your data or method.", type = "error")
             return()
@@ -453,14 +496,13 @@ server <- function(input, output, session) {
           
           var_explained <- cumsum(eig_vals) / sum(eig_vals)
           k_mds <- which(var_explained >= input$mds_var / 100)[1]
-          
-          if (is.na(k_mds)) {
+          if (is.na(k_mds) || k_mds < 1) {
             showNotification("⚠️ No dimension reaches the desired explained variance.", type = "warning")
             return()
           }
           
           mds_coords <- mds_result$points[, 1:k_mds, drop = FALSE]
-          clusters <- kmeans(mds_coords, centers = input$k)$cluster
+          clusters <- kmeans(mds_coords, centers = input$k, nstart = 10)$cluster
           
           output$scree_plot <- renderPlot({
             plot(var_explained * 100, type = "b", pch = 19,
@@ -469,11 +511,12 @@ server <- function(input, output, session) {
                  ylim = c(0, 100), xlim = c(1, min(length(var_explained), 50)))
             abline(h = input$mds_var, col = "red", lty = 2)
           })
-  
-          mds_coords <- mds_result$points[, 1:k_mds]
-          km <- kmeans(mds_coords, centers = input$k)
-          clusters <- km$cluster
+          
+        } else {
+          # Nessuna pesatura e metrica euclidea: k-means diretto su IM
+          clusters <- kmeans(original_IM, centers = input$k, nstart = 10)$cluster
         }
+        
       } else if (input$algorithm == "Hierarchical Clustering") {
         hc <- hclust(dist_matrix, method = input$hclust_method)
         clusters <- cutree(hc, k = input$k)
@@ -508,9 +551,21 @@ server <- function(input, output, session) {
         new_IM <- down2$IM_reduced
         new_XY <- down2$XY_reduced
         
-        colnames(original_IM) <- round(as.numeric(colnames(original_IM)), 1)
-        colnames(new_IM) <- round(as.numeric(colnames(new_IM)), 1)
+        round_dec <- input$mz_round
+        colnames(original_IM) <- round(as.numeric(colnames(original_IM)), digits = round_dec)
+        colnames(new_IM) <- round(as.numeric(colnames(new_IM)), digits = round_dec)
+        
         common_mz <- intersect(colnames(original_IM), colnames(new_IM))
+        
+        # --- COMMON m/z: cache per il report (ordinati numericamente se possibile) ---
+        suppressWarnings(cm_num <- as.numeric(common_mz))
+        if (!any(is.na(cm_num))) {
+          common_mz_sorted <- as.character(sort(cm_num))
+        } else {
+          common_mz_sorted <- sort(common_mz)
+        }
+        session$userData$common_mz_all <- common_mz_sorted
+        session$userData$n_common_mz   <- length(common_mz_sorted)
         
         if (length(common_mz) == 0) {
           new_XY$cluster_plot <- "unclassified"
@@ -548,7 +603,7 @@ server <- function(input, output, session) {
         classified_XY$cluster_plot <- as.factor(assigned)
         
         if (nrow(unclassified_XY) > 0) {
-          unclassified_XY$cluster_plot <- "non_classificato"
+          unclassified_XY$cluster_plot <- "unclassified"
         }
         
         combined_df <- rbind(classified_XY, unclassified_XY)
@@ -579,6 +634,8 @@ server <- function(input, output, session) {
       incProgress(1, detail = "Completed!")
       showNotification("Classification completed ✅", type = "message", duration = 8)
     })
+    
+    # ====================== DOWNLOAD REPORT ======================
     output$downloadClusters <- downloadHandler(
       filename = function() {
         paste0("clusters_", input$mode_rds, "_", Sys.Date(), ".csv")
@@ -599,7 +656,7 @@ server <- function(input, output, session) {
         # 2. Report descrittivo
         report_df <- data.frame(
           Pixel = c("=== CLUSTERING REPORT ===",
-                    "Input type:",
+                    "Decimal places for m/z rounding",
                     "Cell size",
                     "Clustering method:",
                     "Distance method:",
@@ -608,7 +665,7 @@ server <- function(input, output, session) {
                     if (input$algorithm == "K-means" && !(input$method %in% c("euclidean", "squared_euclidean"))) "MDS dimension:" else NULL,
                     "Date:"),
           Cluster = c("",
-                      input$mode_rds,
+                      input$mz_round,
                       input$cell_size,
                       input$algorithm,
                       input$method,
@@ -619,8 +676,33 @@ server <- function(input, output, session) {
           stringsAsFactors = FALSE
         )
         
+        # 3) Sezione COMMON m/z — letti dalla cache session$userData
+        common_all <- session$userData$common_mz_all
+        n_common   <- session$userData$n_common_mz
+        if (is.null(common_all) || is.null(n_common)) {
+          common_all <- character(0)
+          n_common   <- 0
+        }
+        
+        empty_row2  <- data.frame(Pixel = "", Cluster = "", stringsAsFactors = FALSE)
+        header_all  <- data.frame(Pixel = "=== COMMON m/z ===", Cluster = "", stringsAsFactors = FALSE)
+        count_row   <- data.frame(Pixel = "Total common m/z", Cluster = n_common, stringsAsFactors = FALSE)
+        all_mz_rows <- if (n_common > 0) {
+          data.frame(
+            Pixel   = paste0("m/z"),
+            Cluster = common_all,
+            stringsAsFactors = FALSE
+          )
+        } else {
+          data.frame(Pixel = character(0), Cluster = character(0), stringsAsFactors = FALSE)
+        }
+        
         # 3. Salva su file
-        final_df <- rbind(cluster_df, empty_row, report_df)
+        final_df <- rbind(cluster_df, empty_row, report_df,
+                          empty_row2,
+                          header_all,
+                          count_row,
+                          all_mz_rows)
         write.csv(final_df, file, row.names = FALSE)
       },
       contentType = "text/csv"
@@ -629,11 +711,12 @@ server <- function(input, output, session) {
 
 
 
-
-  # ----------------- ZIP -----------------
+#   ----------------- ZIP -----------------
   
-  observeEvent(input$run_zip, {
-    withProgress(message = "Processing data...", value = 0, {
+
+observeEvent(input$run_zip, {
+  
+  withProgress(message = "Processing data...", value = 0, {
       
       req(input$original_zip)
       
@@ -677,34 +760,35 @@ server <- function(input, output, session) {
       
       incProgress(0.7, detail = "Clustering...")
       
-      set.seed(123)
       if (input$algorithm == "K-means") {
+        is_euclid <- tolower(input$method) %in% c("euclidean", "squared_euclidean")
+        use_mds  <- isTRUE(input$weight_space) || !is_euclid
+        # - Se weight_space=TRUE -> MDS SEMPRE (anche per euclidea)
+        # - Se no pesatura: MDS solo per metriche non euclidee
         
-        if (tolower(input$method) %in% c("euclidean", "squared_euclidean")) {
-          clusters <- kmeans(original_IM, centers = input$k, nstart = 10)$cluster
+        if (use_mds) {
+          incProgress(0.75, detail = "Running MDS...")
           
-        } else {
-          # MDS per distanze non euclidee (solo autovalori positivi)
-          mds_result <- cmdscale(dist_matrix, eig = TRUE, k = nrow(original_IM) - 1)
-          eigvals <- mds_result$eig[mds_result$eig > 0]
+          # MDS sulla dist_matrix (già pesata se weight_space=TRUE)
+          mds_result <- cmdscale(dist_matrix, eig = TRUE, k = min(nrow(original_IM) - 1, 50L))
           
-          if (length(eigvals) == 0) {
-            showNotification("⚠️ Nessun autovalore positivo trovato in MDS. Controlla i dati.", type = "error")
+          eig_vals <- mds_result$eig[mds_result$eig > 0]
+          if (length(eig_vals) == 0) {
+            showNotification("⚠️ No positive eigenvalues found in MDS. Check your data or method.", type = "error")
             return()
           }
           
-          var_explained <- cumsum(eigvals) / sum(eigvals)
+          var_explained <- cumsum(eig_vals) / sum(eig_vals)
           k_mds <- which(var_explained >= input$mds_var / 100)[1]
-          
-          if (is.na(k_mds)) {
-            showNotification("⚠️ Nessuna dimensione raggiunge la varianza richiesta.", type = "warning")
+          if (is.na(k_mds) || k_mds < 1) {
+            showNotification("⚠️ No dimension reaches the desired explained variance.", type = "warning")
             return()
           }
           
           mds_coords <- mds_result$points[, 1:k_mds, drop = FALSE]
-          clusters <- kmeans(mds_coords, centers = input$k)$cluster
+          clusters <- kmeans(mds_coords, centers = input$k, nstart = 10)$cluster
           
-          # Screeplot aggiornato
+          # Scree plot ZIP (coerente con la tua versione .rds)
           output$scree_plot_zip <- renderPlot({
             plot(var_explained * 100, type = "b", pch = 19,
                  xlab = "Number of dimensions", ylab = "Cumulative explained variance (%)",
@@ -712,12 +796,17 @@ server <- function(input, output, session) {
                  ylim = c(0, 100), xlim = c(1, min(length(var_explained), 50)))
             abline(h = input$mds_var, col = "red", lty = 2)
           })
+          
+        } else {
+          # Nessuna pesatura e metrica euclidea: k-means diretto su IM
+          clusters <- kmeans(original_IM, centers = input$k, nstart = 10)$cluster
         }
         
       } else {
         hc <- hclust(dist_matrix, method = input$hclust_method)
         clusters <- cutree(hc, k = input$k)
       }
+      
       
       output$plot_zip_orig <- renderPlotly({
         original_XY$cluster <- as.factor(clusters)
@@ -741,16 +830,29 @@ server <- function(input, output, session) {
         
         req(input$new_zip)
         
-        res2 <- fun_extractData(input$new_zip)
+        res2  <- fun_extractData(input$new_zip)
         down2 <- downsample_grid(res2$featureMatrix, res2$coordinates, input$cell_size)
         new_IM <- down2$IM_reduced
         new_XY <- down2$XY_reduced
         
-        colnames(original_IM) <- round(as.numeric(colnames(original_IM)), 1)
-        colnames(new_IM) <- round(as.numeric(colnames(new_IM)), 1)
+        round_dec <- input$mz_round
+        colnames(original_IM) <- round(as.numeric(colnames(original_IM)), digits = round_dec)
+        colnames(new_IM)      <- round(as.numeric(colnames(new_IM)),      digits = round_dec)
+        
         common_mz <- intersect(colnames(original_IM), colnames(new_IM))
         
+        # --- COMMON m/z: cache per il report (ordinati numericamente se possibile) ---
+        suppressWarnings(cm_num <- as.numeric(common_mz))
+        if (!any(is.na(cm_num))) {
+          common_mz_sorted <- as.character(sort(cm_num))
+        } else {
+          common_mz_sorted <- sort(common_mz)
+        }
+        session$userData$common_mz_all <- common_mz_sorted
+        session$userData$n_common_mz   <- length(common_mz_sorted)
+        
         if (length(common_mz) == 0) {
+          # Etichetta coerente in italiano
           new_XY$cluster_plot <- as.factor("unclassified")
           
           output$plot_zip_new <- renderPlotly({
@@ -766,7 +868,7 @@ server <- function(input, output, session) {
               ) +
               labs(
                 title = "Clusters in the new tissue",
-                subtitle = "No compatible m/z values",
+                subtitle = "No matching m/z values",
                 x = "X", y = "Y"
               ) +
               coord_fixed() +
@@ -775,31 +877,37 @@ server <- function(input, output, session) {
             ggplotly(p, tooltip = "text")
           })
           
-          showNotification("⚠️ No common m/z values between the two tissues. Classification not performed.", type = "warning")
+          showNotification("⚠️ No common m/z values between the two tissues. Classification not performed.",
+                           type = "warning")
           return()
         }
         
-        valid_idx <- complete.cases(new_IM[, common_mz])
-        classified_IM <- new_IM[valid_idx, common_mz, drop = FALSE]
-        classified_XY <- new_XY[valid_idx, , drop = FALSE]
+        valid_idx       <- complete.cases(new_IM[, common_mz])
+        classified_IM   <- new_IM[valid_idx, common_mz, drop = FALSE]
+        classified_XY   <- new_XY[valid_idx, , drop = FALSE]
         unclassified_XY <- new_XY[!valid_idx, , drop = FALSE]
         
-        dist_to_new <- proxy::dist(classified_IM, original_IM[, common_mz], method = input$method)
+        # Mappa 'squared_euclidean' -> 'euclidean' per proxy::dist
+        method_for_proxy <- if (tolower(input$method) == "squared_euclidean") "euclidean" else tolower(input$method)
+        dist_to_new <- proxy::dist(classified_IM, original_IM[, common_mz], method = method_for_proxy)
+        
         assigned <- apply(as.matrix(dist_to_new), 1, function(row) clusters[which.min(row)])
         classified_XY$cluster_plot <- as.character(assigned)
         
         if (nrow(unclassified_XY) > 0) {
-          unclassified_XY$cluster_plot <- "non_classificato"
+          unclassified_XY$cluster_plot <- "unclassified"
         }
         
+        # Unione sicura e livelli
         combined_df <- rbind(classified_XY, unclassified_XY)
         
         livelli_cluster <- as.character(1:input$k)
-        combined_df$cluster_plot <- factor(combined_df$cluster_plot, levels = c(livelli_cluster, "non_classificato"))
+        combined_df$cluster_plot <- factor(combined_df$cluster_plot,
+                                           levels = c(livelli_cluster, "unclassified"))
         
         cluster_colors <- viridis::viridis(input$k, option = "plasma")
         names(cluster_colors) <- livelli_cluster
-        cluster_colors <- c(cluster_colors, "non_classificato" = "grey80")
+        cluster_colors <- c(cluster_colors, "unclassified" = "grey80")
         
         output$plot_zip_new <- renderPlotly({
           p <- ggplot(combined_df, aes(
@@ -818,56 +926,90 @@ server <- function(input, output, session) {
           ggplotly(p, tooltip = "text")
         })
       }
+      
       # <-- Alla fine della procedura -->
       incProgress(1, detail = "Completed!")
       showNotification("Classification completed ✅", type = "message", duration = 8)
     }) # fine withProgress
     
     
+    # ====================== DOWNLOAD REPORT ======================
     output$downloadClusters <- downloadHandler(
-  filename = function() {
-    paste0("clusters_", input$mode_zip, "_", Sys.Date(), ".csv")
-  },
-  content = function(file) {
-    # Check che i cluster esistano
-    if (!exists("assigned") || is.null(assigned)) {
-      showNotification("❌ No cluster assignment found.", type = "error")
-      return(NULL)
-    }
-
-    # 1. Dati clustering
-    cluster_df <- data.frame(Pixel = seq_along(assigned), Cluster = assigned)
-
-    # Riga vuota per separazione
-    empty_row <- data.frame(Pixel = "", Cluster = "")
-
-    # 2. Report descrittivo
-    report_df <- data.frame(
-      Pixel = c("=== CLUSTERING REPORT ===",
-                "Cell size",
-                "Clustering method:",
-                "Distance method:",
-                "Spatial penalization:",
-                "Number of clusters:",
-                if (input$algorithm == "K-means" && !(input$method %in% c("euclidean", "squared_euclidean"))) "MDS dimension:" else NULL,
-                "Date:"),
-      Cluster = c("",
-                  input$cell_size,
-                  input$algorithm,
-                  input$method,
-                  ifelse(input$weight_space, "Yes", "No"),
-                  input$k,
-                  if (input$algorithm == "K-means" && !(input$method %in% c("euclidean", "squared_euclidean"))) input$mds_var else NULL,
-                  format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
-      stringsAsFactors = FALSE
+      filename = function() {
+        paste0("clusters_", input$mode_zip, "_", Sys.Date(), ".csv")
+      },
+      content = function(file) {
+        # Check che i cluster esistano
+        if (!exists("assigned") || is.null(assigned)) {
+          showNotification("❌ No cluster assignment found.", type = "error")
+          return(NULL)
+        }
+        
+        # 1) Dati clustering
+        cluster_df <- data.frame(Pixel = seq_along(assigned), Cluster = assigned)
+        
+        # Riga vuota per separazione
+        empty_row <- data.frame(Pixel = "", Cluster = "")
+        
+        # 2) Report descrittivo
+        report_df <- data.frame(
+          Pixel = c("=== CLUSTERING REPORT ===",
+                    "Decimal places for m/z rounding",
+                    "Cell size",
+                    "Clustering method:",
+                    "Distance method:",
+                    "Spatial penalization:",
+                    "Number of clusters:",
+                    if (input$algorithm == "K-means" && !(tolower(input$method) %in% c("euclidean", "squared_euclidean"))) "MDS dimension:" else NULL,
+                    "Date:"),
+          Cluster = c("",
+                      input$mz_round,
+                      input$cell_size,
+                      input$algorithm,
+                      input$method,
+                      ifelse(input$weight_space, "Yes", "No"),
+                      input$k,
+                      if (input$algorithm == "K-means" && !(tolower(input$method) %in% c("euclidean", "squared_euclidean"))) input$mds_var else NULL,
+                      format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
+          stringsAsFactors = FALSE
+        )
+        
+        # 3) Sezione COMMON m/z — letti dalla cache session$userData
+        common_all <- session$userData$common_mz_all
+        n_common   <- session$userData$n_common_mz
+        if (is.null(common_all) || is.null(n_common)) {
+          common_all <- character(0)
+          n_common   <- 0
+        }
+        
+        empty_row2  <- data.frame(Pixel = "", Cluster = "", stringsAsFactors = FALSE)
+        header_all  <- data.frame(Pixel = "=== COMMON m/z ===", Cluster = "", stringsAsFactors = FALSE)
+        count_row   <- data.frame(Pixel = "Total common m/z", Cluster = n_common, stringsAsFactors = FALSE)
+        all_mz_rows <- if (n_common > 0) {
+          data.frame(
+            Pixel   = paste0("m/z"),
+            Cluster = common_all,
+            stringsAsFactors = FALSE
+          )
+        } else {
+          data.frame(Pixel = character(0), Cluster = character(0), stringsAsFactors = FALSE)
+        }
+        
+        # 4) Scrittura CSV (report completo)
+        final_df <- rbind(
+          cluster_df,
+          empty_row,
+          report_df,
+          empty_row2,
+          header_all,
+          count_row,
+          all_mz_rows
+        )
+        write.csv(final_df, file, row.names = FALSE)
+      },
+      contentType = "text/csv"
     )
-
-    # 3. Salva su file
-    final_df <- rbind(cluster_df, empty_row, report_df)
-    write.csv(final_df, file, row.names = FALSE)
-  },
-  contentType = "text/csv"
-)
+    
 
   })
   
@@ -877,5 +1019,7 @@ server <- function(input, output, session) {
 
 # -------- AVVIO --------
 shinyApp(ui, server)
+
+
 
 
